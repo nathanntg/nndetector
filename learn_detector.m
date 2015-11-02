@@ -14,11 +14,23 @@ Y_NEGATIVE = 0;
 
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 
+% piling up the parameters here
+
 %% Downsample the data
+
 samplerate = 20000;
 freq_range = [2000 7000]; % TUNE
 time_window = 0.03; % TUNE
 times_of_interest = [.53];
+
+% How many seconds on either side of the tstep_of_interest is an acceptable match?
+MATCH_PLUSMINUS = 0.02;
+% Cost of false positives is relative to that of false negatives.
+FALSE_POSITIVE_COST = 1 % TUNE
+
+FFT_SIZE = 256;
+FFT_TIME_SHIFT = 0.003;                        % seconds
+NOVERLAP = FFT_SIZE - (floor(samplerate * FFT_TIME_SHIFT));
 NTRAIN = 1000;
 
 if FS ~= samplerate
@@ -41,11 +53,7 @@ MIC_DATA = filter(B, A, MIC_DATA); % TODO: meaningful frequencies here
 % optimal but I have not played with them).  Compute one to get size, then
 % preallocate memory and compute the rest in parallel.
 
-FFT_SIZE = 256;
-FFT_TIME_SHIFT = 0.003;                        % seconds
-NOVERLAP = FFT_SIZE - (floor(samplerate * FFT_TIME_SHIFT));
 fprintf('FFT time shift = %g s\n', FFT_TIME_SHIFT);
-
 window = hamming(FFT_SIZE);
 
 [speck freqs times] = spectrogram(MIC_DATA(:,1), window, NOVERLAP, [], samplerate);
@@ -56,15 +64,16 @@ speck = speck + eps;
 % round-off error is a possibility.  This is actually seconds/timestep.
 timestep = (times(end)-times(1))/(length(times)-1);
 
-
 %% Define training set
 % Hold some data out for final testing.
 ntrainsongs = min(floor(nsongs*8/10), NTRAIN);
 ntestsongs = nsongs - ntrainsongs;
+
 % On each run of this program, change the presentation order of the
 % data, so we get (a) a different subset of the data than last time for
 % training vs. final testing and (b) different training data presentation
 % order.
+
 randomsongs = randperm(nsongs);
 
 
@@ -76,7 +85,6 @@ parfor i = 2:nsongs
 end
 
 spectrograms = single(spectrograms);
-
 
 % Create a pretty graphic for display (which happens later)
 spectrograms = abs(spectrograms);
@@ -99,13 +107,10 @@ colorbar;
 % Number of samples: (nsongs*(ntimes-time_window))
 % Size of each sample: (ntimes-time_window)*length(freq_range)
 
-
-
 %% Cut out a region of the spectrum (in space and time) to save on compute
 %% time:
 
 %%%%%%%%%%%%
-
 
 freq_range_ds = find(freqs >= freq_range(1) & freqs <= freq_range(2));
 disp(sprintf('Using frequencies in [ %g %g ] Hz: %d frequency samples.', ...
@@ -120,7 +125,6 @@ layer0sz = length(freq_range_ds) * time_window_steps;
 % windows.  How many are there?  The training output set Y will be made by
 % setting all time windows but the desired one to 0.
 nwindows_per_song = ntimes - time_window_steps + 1;
-
 
 if 0
         randomsongs = 1:nsongs;
@@ -138,7 +142,6 @@ if any(times_of_interest < time_window)
                 sprintf('%g ', times_of_interest), time_window);
 end
 
-
 ntsteps_of_interest = length(tstep_of_interest);
 
 %% For each timestep of interest, get the offset of this song from the most typical one.
@@ -146,10 +149,12 @@ disp('Computing target jitter compensation...');
 
 % We'll look for this long around the timestep, to compute the canonical
 % song
+
 time_buffer = 0.04;
 tstep_buffer = round(time_buffer / timestep);
 
 % For alignment: which is the most stereotypical song at each target?
+
 for i = 1:ntsteps_of_interest
         range = tstep_of_interest(i)-tstep_buffer:tstep_of_interest(i)+tstep_buffer;
         range = range(find(range>0&range<=ntimes));
@@ -180,9 +185,9 @@ windowrect = rectangle('Position', [(times_of_interest(1) - time_window)*1000 ..
 drawnow;
 
 
-
 %% Create the training set
 disp(sprintf('Creating training set from %d songs...', ntrainsongs));
+
 % This loop also shuffles the songs according to randomsongs, so we can use
 % contiguous blocks for training / testing
 
@@ -203,6 +208,7 @@ nnsetY = Y_NEGATIVE * ones(ntsteps_of_interest, nsongs * nwindows_per_song);
 
 % This only indirectly affects final timing precision, since thresholds are
 % optimally tuned based on the window defined in MATCH_PLUSMINUS.
+
 shotgun_max_sec = 0.02;
 shotgun_sigma = 0.003; % TUNE
 shotgun = normpdf(0:timestep:shotgun_max_sec, 0, shotgun_sigma);
@@ -261,8 +267,6 @@ nnset_test = ntrainsongs * nwindows_per_song + 1 : size(nnsetX, 2);
 % layer.  [8] means one hidden layer with 8 units.  [] means a simple
 % perceptron.
 
-
-
 net = feedforwardnet(ceil([4 * ntsteps_of_interest])); % TUNE
 %net = feedforwardnet([ntsteps_of_interest]);
 %net = feedforwardnet([]);
@@ -276,16 +280,14 @@ fprintf('Training network with %s...\n', net.trainFcn);
 % Once the validation set performance stops improving, it doesn't seem to
 % get better, so keep this small.
 net.trainParam.max_fail = 2;
-if training_set_MB < 10000
-        parallelise_training = 'no'; % Actually slows down training??
-else
-        parallelise_training = 'no';
-end
+
 tic
 %net = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), {}, {}, 0.1 + nnsetY(:, nnset_train));
-[net, train_record] = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), 'UseParallel', parallelise_training);
+[net, train_record] = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), 'UseParallel', 'no');
+
 % Oh yeah, the line above was the hard part.
 disp(sprintf('   ...training took %g minutes.', toc/60));
+
 % Test on all the data:
 testout = sim(net, nnsetX);
 testout = reshape(testout, ntsteps_of_interest, nwindows_per_song, nsongs);
@@ -299,11 +301,6 @@ power_img = power_img(randomsongs,:);
 power_img = repmat(power_img / max(max(power_img)), [1 1 3]);
 
 disp('Computing optimal output thresholds...');
-
-% How many seconds on either side of the tstep_of_interest is an acceptable match?
-MATCH_PLUSMINUS = 0.02;
-% Cost of false positives is relative to that of false negatives.
-FALSE_POSITIVE_COST = 1 % TUNE
 
 songs_with_hits = [ones(1, nmatchingsongs) zeros(1, nsongs - nmatchingsongs)]';
 songs_with_hits = songs_with_hits(randomsongs);
