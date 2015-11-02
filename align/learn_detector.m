@@ -1,4 +1,7 @@
-clear;
+function learn_detector(MIC_DATA,FS,BIRD)
+%
+%
+%clear;
 
 rng('shuffle');
 
@@ -7,119 +10,35 @@ rng('shuffle');
 global Y_NEGATIVE;
 Y_NEGATIVE = 0;
 
-if 1
-        BIRD='lg373rblk';
-        load('/Users/Shared/lg373rblk/test/lg373_MANUALCLUST/mat/roboaggregate/roboaggregate.mat');
-        MIC_DATA = audio.data;
-        agg_audio.fs = audio.fs;
-elseif 0
-        BIRD='lw8rhp';
-        load('/Users/bwpearre/Desktop/Will/test_MANUALCLUST/mat/roboaggregate/roboaggregate.mat');
-        MIC_DATA = audio.data;
-        agg_audio.fs = audio.fs;
-elseif 0
-        load('~/r/data/wintest25/out_MANUALCLUST/extracted_data');
-        MIC_DATA = agg_audio.data;
-elseif 0
-        BIRD='lg373rblk';
-        load('/Users/bwpearre/r/data/lg373rblk_2015_01_14/wav/out_MANUALCLUST/extracted_data.mat');
-        MIC_DATA = agg_audio.data;
-elseif 0
-        BIRD='lw27ry';
-        load('~/r/data/lw27ry_extracted_data');
-        agg_audio.data = agg_audio.data(1:24000,:);
-        clear agg_data;
-        MIC_DATA = agg_audio.data;
-elseif 0
-        BIRD='lg373rblk';
-        load('/Users/Shared/lg373rblk/2cntnerve/2015-03-23/mat/lg373_MANUALCLUST/extracted_data.mat');
-        MIC_DATA = agg_audio.data;
-else
-        load aggregated_data;
-        agg_audio.fs = fs;
-end
-
-%%% Code snippet to create songs for audio device input
-%some_songs = reshape(MIC_DATA(:, 1:50), [], 1);
-%
-%audiowrite('birdsongs.ogg', ...
-%        some_songs / max([max(max(some_songs)) abs(min(min(some_songs)))]), ...
-%        44100);
+% set mic data to training data
 
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 
 %% Downsample the data
 samplerate = 20000;
-if agg_audio.fs ~= samplerate
-        disp(sprintf('Resampling data from %g Hz to %g Hz...', agg_audio.fs, samplerate));
-        [a b] = rat(samplerate/agg_audio.fs);
+freq_range = [2000 7000]; % TUNE
+time_window = 0.03; % TUNE
+times_of_interest = [.5];
+
+if FS ~= samplerate
+        disp(sprintf('Resampling data from %g Hz to %g Hz...', FS, samplerate));
+        [a b] = rat(samplerate/FS);
 
         MIC_DATA = double(MIC_DATA);
         MIC_DATA = resample(MIC_DATA, a, b);
 end
 %MIC_DATA = MIC_DATA(1:raw_time_ds:end,:);
-MIC_DATA = MIC_DATA / max(max(max(MIC_DATA)), -min(min(MIC_DATA)));
-
-clear agg_audio.data;
-clear agg_data;
+MIC_DATA = MIC_DATA / max(max(max(MIC_DATA)), -min(min(MIC_DATA))); % TODO: profile normalization schemes
 
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 
 NTRAIN = 1000;
 
-%% Add some non-matching sound fragments and songs and such from another
-%% bird... try around 10% of the training corpus?
-NONSINGING_FRACTION = 1;
-nonmatchingbird = 'lblk121rr';
-if strcmp(BIRD, nonmatchingbird)
-        fprintf('ERROR: using the same bird--%s--for training and for nonmatching data!\n', BIRD);
-        a(0);
-end
-nonmatchingloc = '/Volumes/disk2/winData';
-l = dir(sprintf('%s/%s', nonmatchingloc, nonmatchingbird));
-nonmatchingsongs = zeros(round(size(MIC_DATA) .* [1 NONSINGING_FRACTION]));
-need_n_songs = size(nonmatchingsongs, 2);
-
-fprintf('Borrowing some non-matching songs from ''%s/%s''...\n', nonmatchingloc, nonmatchingbird);
-
-% incorporate nonmatching data
-done = false;
-nnewsongs = 0;
-for i = 1:length(l)
-        if ~strncmp(l(i).name(end:-1:1), 'vaw.', 4)
-                continue;
-        end
-        %fprintf('reading ''%s''\n', l(i).name);
-        [foo, nonmatchingfs] = audioread(sprintf('%s/%s/%s', nonmatchingloc, nonmatchingbird, l(i).name));
-
-        % downsample
-        nonmatching_resample = round([samplerate nonmatchingfs]);
-        foo = resample(foo, round(samplerate), round(nonmatchingfs));
-        % normalise
-        foo = foo / max(max(foo), -min(foo));
-
-        % append to the extant audio
-        songs_available = floor(length(foo) / nsamples_per_song);
-        foo = reshape(foo(1:(songs_available*nsamples_per_song)), nsamples_per_song, songs_available);
-        
-        take_n_songs = min(need_n_songs, songs_available);
-        
-        nonmatchingsongs(:, nnewsongs+1:min(size(nonmatchingsongs, 2), nnewsongs+songs_available)) = foo(:, 1:take_n_songs);
-        nnewsongs = nnewsongs + songs_available;
-        need_n_songs = need_n_songs - take_n_songs;
-        if need_n_songs <= 0
-                break;
-        end
-end
-
-MIC_DATA = single([MIC_DATA nonmatchingsongs]);
-
 nsongs = size(MIC_DATA, 2);
 
 disp('Bandpass-filtering the data...');
 [B A] = butter(4, [0.03 0.9]);
-MIC_DATA = filter(B, A, MIC_DATA);
-
+MIC_DATA = filter(B, A, MIC_DATA); % TODO: meaningful frequencies here
 
 % Compute the spectrogram using original parameters (probably far from
 % optimal but I have not played with them).  Compute one to get size, then
@@ -189,8 +108,7 @@ colorbar;
 
 %% Cut out a region of the spectrum (in space and time) to save on compute
 %% time:
-freq_range = [2000 7000]; % TUNE
-time_window = 0.03; % TUNE
+
 %%%%%%%%%%%%
 
 
@@ -217,28 +135,7 @@ end
 trainsongs = randomsongs(1:ntrainsongs);
 testsongs = randomsongs(1:ntestsongs);
 
-if 0
-        disp('Looking for promising syllables...');
-        tstep_of_interest = suggest_moments_of_interest(5, ...
-                spectrogram_avg_img, ...
-                time_window_steps, ...
-                timestep, ...
-                layer0sz, ...
-                nwindows_per_song, ...
-                ntimes, ...
-                freq_range_ds);
-        times_of_interest = tstep_of_interest * timestep
-else % TUNE
-        %times_of_interest = 0.78;
-        %times_of_interest = [ 0.28 0.775 ];
-        %times_of_interest = 0.325;
-        times_of_interest = [0.325];
-        %times_of_interest = 0.45:0.01:0.48;
-        %times_of_interest = [ 0.2:0.01:0.35 ];
-        %times_of_interest = 0.5;
-        
-        tstep_of_interest = round(times_of_interest / timestep);
-end
+tstep_of_interest = round(times_of_interest / timestep);
 
 if any(times_of_interest < time_window)
         error('learn_detector:invalid_time', ...
@@ -325,19 +222,19 @@ end
 for song = 1:nsongs
 
         for tstep = time_window_steps : ntimes
-                
+
                 nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
                        = reshape(spectrograms(randomsongs(song), ...
                                  freq_range_ds, ...
                                  tstep - time_window_steps + 1  :  tstep), ...
                                  [], 1);
-                   
+
                 % Fill in the positive hits, if appropriate...
                 if randomsongs(song) > nmatchingsongs
                         continue;
                 end
                 for interesting = 1:ntsteps_of_interest
-                        if tstep == tstep_of_interest(interesting) 
+                        if tstep == tstep_of_interest(interesting)
                                 nnsetY(interesting, (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps - shothalf + 2 : ...
                                                     (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps + shothalf) = shotgun;
                         end
@@ -450,7 +347,7 @@ for i = 1:ntsteps_of_interest
                 img(ntrainsongs+1:end, :, 1) = img(ntrainsongs+1:end, :, 1) + fooo(ntrainsongs+1:end,:);
                 img(ntrainsongs+1:end, :, 2) = img(ntrainsongs+1:end, :, 2) - fooo(ntrainsongs+1:end,:);
                 img(ntrainsongs+1:end, :, 3) = img(ntrainsongs+1:end, :, 3) - fooo(ntrainsongs+1:end,:);
-                
+
                 img(1:ntrainsongs, 1:time_window_steps, 3) = 1;
                 img(1:ntrainsongs, 1:time_window_steps, 2) = 1;
                 img(1:ntrainsongs, 1:time_window_steps, 1) = 0;
@@ -542,4 +439,7 @@ for i = 1:nsongs
 end
 hits = reshape(hits, [], 1);
 songs = [songs hits];
-audiowrite(sprintf('songs_%s%ss_%d%%.wav', BIRD, sprintf('_%g', times_of_interest), round(100/(1+NONSINGING_FRACTION))), songs, round(samplerate));
+
+% new call for writing out testing data
+
+%audiowrite(sprintf('songs_%s%ss_%d%%.wav', BIRD, sprintf('_%g', times_of_interest), round(100/(1+NONSINGING_FRACTION))), songs, round(samplerate));
