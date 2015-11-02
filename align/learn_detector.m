@@ -18,21 +18,18 @@ Y_NEGATIVE = 0;
 samplerate = 20000;
 freq_range = [2000 7000]; % TUNE
 time_window = 0.03; % TUNE
-times_of_interest = [.5];
+times_of_interest = [.53];
+NTRAIN = 1000;
 
 if FS ~= samplerate
         disp(sprintf('Resampling data from %g Hz to %g Hz...', FS, samplerate));
         [a b] = rat(samplerate/FS);
-
         MIC_DATA = double(MIC_DATA);
         MIC_DATA = resample(MIC_DATA, a, b);
 end
-%MIC_DATA = MIC_DATA(1:raw_time_ds:end,:);
+
 MIC_DATA = MIC_DATA / max(max(max(MIC_DATA)), -min(min(MIC_DATA))); % TODO: profile normalization schemes
-
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
-
-NTRAIN = 1000;
 
 nsongs = size(MIC_DATA, 2);
 
@@ -44,8 +41,6 @@ MIC_DATA = filter(B, A, MIC_DATA); % TODO: meaningful frequencies here
 % optimal but I have not played with them).  Compute one to get size, then
 % preallocate memory and compute the rest in parallel.
 
-% SPECGRAM(A,NFFT=512,Fs=[],WINDOW=[],NOVERLAP=500)
-%speck = specgram(MIC_DATA(:,1), 512, [], [], 500) + eps;
 FFT_SIZE = 256;
 FFT_TIME_SHIFT = 0.003;                        % seconds
 NOVERLAP = FFT_SIZE - (floor(samplerate * FFT_TIME_SHIFT));
