@@ -1,7 +1,55 @@
-function learn_detector(MIC_DATA,FS,BIRD)
+function learn_detector(MIC_DATA,FS,varargin)
 %
-%
+% TODO: clear GUI for selecting points of interest
+% TODO: further factorization
+% TODO: save to text by default
 %clear;
+
+if ~isa(MIC_DATA,'double')
+  MIC_DATA=double(MIC_DATA);
+end
+
+bird='test';
+padding=[];
+times_of_interest=.86;
+samplerate=44.1e3;
+freq_range=[2e3 7e3];
+subsample=[];
+
+nparams=length(varargin);
+
+if mod(nparams,2)>0
+	error('nndetector:argChk','Parameters must be specified as parameter/value pairs!');
+end
+
+for i=1:2:nparams
+	switch lower(varargin{i})
+    case 'bird'
+      bird=varargin{i+1};
+    case 'padding'
+			padding=varargin{i+1};
+    case 'times_of_interest'
+      times_of_interest=varargin{i+1};
+    case 'samplerate'
+      samplerate=varargin{i+1};
+    case 'freq_range'
+      freq_range=varargin{i+1};
+    case 'subsample'
+      subsample=varargin{i+1};
+	end
+end
+
+if ~isempty(padding) & length(padding)==2
+  pad_smps=round(padding*FS);
+  MIC_DATA=MIC_DATA(pad_smps(1):end-pad_smps(2),:);
+end
+
+if ~isempty(subsample)
+  disp(['Selecting ' num2str(subsample) ' trials at random...']);
+  trial_pool=1:size(MIC_DATA,2);
+  rnd_pool=randsample(trial_pool,subsample);
+  MIC_DATA=MIC_DATA(:,rnd_pool);
+end
 
 rng('shuffle');
 
@@ -18,10 +66,7 @@ Y_NEGATIVE = 0;
 
 %% Downsample the data
 
-samplerate = 20000;
-freq_range = [2000 7000]; % TUNE
 time_window = 0.03; % TUNE
-times_of_interest = [.53];
 
 % How many seconds on either side of the tstep_of_interest is an acceptable match?
 MATCH_PLUSMINUS = 0.02;
@@ -404,7 +449,7 @@ mmmingain = net.inputs{1}.processSettings{1}.gain;
 mmmoutoffset = net.outputs{2}.processSettings{1}.xoffset;
 mmmoutgain = net.outputs{2}.processSettings{1}.gain;
 filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain.mat', ...
-        BIRD, sprintf('_%g', times_of_interest), floor(1/FFT_TIME_SHIFT), net.layers{1}.dimensions, NTRAIN);
+        bird, sprintf('_%g', times_of_interest), floor(1/FFT_TIME_SHIFT), net.layers{1}.dimensions, NTRAIN);
 fprintf('Saving as ''%s''...\n', filename);
 save(filename, ...
         'net', 'train_record', 'layer0', 'layer1', 'bias0', 'bias1', ...
@@ -434,4 +479,4 @@ songs = [songs hits];
 
 % new call for writing out testing data
 
-%audiowrite(sprintf('songs_%s%ss_%d%%.wav', BIRD, sprintf('_%g', times_of_interest), round(100/(1+NONSINGING_FRACTION))), songs, round(samplerate));
+%audiowrite(sprintf('songs_%s%ss_%d%%.wav', bird, sprintf('_%g', times_of_interest), round(100/(1+NONSINGING_FRACTION))), songs, round(samplerate));
