@@ -85,14 +85,14 @@ if FS ~= samplerate
         MIC_DATA = resample(MIC_DATA, a, b);
 end
 
-MIC_DATA = MIC_DATA / max(max(max(MIC_DATA)), -min(min(MIC_DATA))); % TODO: profile normalization schemes
-[nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
+%MIC_DATA = MIC_DATA / max(max(max(MIC_DATA)), -min(min(MIC_DATA))); % TODO: profile normalization schemes
 
+[nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 nsongs = size(MIC_DATA, 2);
 
-disp('Bandpass-filtering the data...');
-[B A] = butter(4, [0.03 0.9]);
-MIC_DATA = filter(B, A, MIC_DATA); % TODO: meaningful frequencies here
+%disp('Bandpass-filtering the data...');
+%[B A] = butter(4, [0.03 0.9]);
+%MIC_DATA = filter(B, A, MIC_DATA); % TODO: meaningful frequencies here
 
 % Compute the spectrogram using original parameters (probably far from
 % optimal but I have not played with them).  Compute one to get size, then
@@ -121,7 +121,6 @@ ntestsongs = nsongs - ntrainsongs;
 
 randomsongs = randperm(nsongs);
 
-
 spectrograms = zeros([nsongs nfreqs ntimes]);
 spectrograms(1, :, :) = speck;
 disp('Computing spectrograms...');
@@ -133,7 +132,9 @@ spectrograms = single(spectrograms);
 
 % Create a pretty graphic for display (which happens later)
 spectrograms = abs(spectrograms);
-spectrogram_avg_img = squeeze(log(sum(spectrograms(1:nmatchingsongs,:,:))));
+spectrogram_avg_img = squeeze((mean(spectrograms(1:nmatchingsongs,:,:))));
+
+%spectrograms=20*log10(spectrograms);
 
 %% Draw the pretty full-res spectrogram and the targets
 figure(4);
