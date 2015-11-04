@@ -18,7 +18,7 @@ freq_range=[1e3 9e3];
 subsample=[];
 match_slop= 0.02; % acceptable match on either side of selection point (secs)
 false_positive_cost=1; % weight of false positives
-time_window = 0.03; % TUNE
+time_window = 0.06; % TUNE
 neg_examples=[];
 
 nparams=length(varargin);
@@ -54,10 +54,15 @@ if ~isempty(padding) & length(padding)==2
 end
 
 if ~isempty(subsample)
-  disp(['Selecting ' num2str(subsample) ' trials at random...']);
+  disp(['Selecting ' num2str(subsample) ' trials across the dataset...']);
   trial_pool=1:size(MIC_DATA,2);
-  rnd_pool=randsample(trial_pool,subsample);
-  MIC_DATA=MIC_DATA(:,rnd_pool);
+  sub_pool=unique(round(linspace(1,length(trial_pool),subsample)));
+
+  if length(sub_pool)~=subsample
+    error('nndetector_learn:subsample','Issue subsampling...');
+  end
+
+  MIC_DATA=MIC_DATA(:,sub_pool);
 end
 
 rng('shuffle');
@@ -139,12 +144,10 @@ end
 spectrograms = single(spectrograms);
 
 % Create a pretty graphic for display (which happens later)
+
 spectrograms = abs(spectrograms);
 spectrogram_avg_img = 20*log10(squeeze((mean(spectrograms(1:nmatchingsongs,:,:)))));
 
-% fft norm here
-
-%spectrograms=20*log10(spectrograms);
 % Number of samples: (nsongs*(ntimes-time_window))
 % Size of each sample: (ntimes-time_window)*length(freq_range)
 
@@ -190,7 +193,8 @@ for i = 1:ntsteps_of_interest
         range = range(find(range>0&range<=ntimes));
         foo = reshape(spectrograms(1:nmatchingsongs, :, range), nmatchingsongs, []) * reshape(mean(spectrograms(:, :, range), 1), 1, [])';
         [val canonical_songs(i)] = max(foo);
-        [target_offsets(i,:) sample_offsets(i,:)] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs), tstep_of_interest(i), samplerate, timestep, canonical_songs(i));
+        [target_offsets(i,:) sample_offsets(i,:)] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs),...
+          tstep_of_interest(i), samplerate, timestep, canonical_songs(i));
 end
 
 %% Create the training set
@@ -224,7 +228,7 @@ shotgun = shotgun / max(shotgun);
 shotgun = shotgun(find(shotgun>0.1));
 shothalf = length(shotgun);
 if shothalf
-        shotgun = [ shotgun(end:-1:2) shotgun ]
+        shotgun = [ shotgun(end:-1:2) shotgun ];
 end
 
 % Populate the training data.  Infinite RAM makes this so much easier!
@@ -300,7 +304,7 @@ disp('Computing optimal output thresholds...');
 songs_with_hits = [ones(1, nmatchingsongs) zeros(1, nsongs - nmatchingsongs)]';
 songs_with_hits = songs_with_hits(randomsongs);
 
-trigger_thresholds = optimise_network_output_unit_trigger_thresholds(...
+[trigger_thresholds figs.roc] = optimise_network_output_unit_trigger_thresholds(...
         testout, ...
         nwindows_per_song, ...
         false_positive_cost, ...
@@ -311,38 +315,22 @@ trigger_thresholds = optimise_network_output_unit_trigger_thresholds(...
         time_window_steps, ...
         songs_with_hits);
 
-figure(6);
+figs.performance=figure();
 nndetector_vis_train(times,freqs,spectrogram_avg_img,...
   times_of_interest,tstep_of_interest,freq_range,time_window);
 nndetector_vis_test(ntsteps_of_interest,testout,spectrograms,times,time_window,...
   time_window_steps,trigger_thresholds,ntrainsongs,ntestsongs,timestep,randomsongs,nmatchingsongs);
+colormap(jet);
 
 % Draw the hidden units' weights.  Let the user make these square or not
 % because lazy...
-if net.numLayers > 1
-        figure(5);
-        for i = 1:size(net.IW{1}, 1)
-                subplot(size(net.IW{1}, 1), 1, i)
-                imagesc([-time_window_steps:0]*FFT_TIME_SHIFT*1000, linspace(freq_range(1), freq_range(2), length(freq_range_ds))/1000, ...
-                        reshape(net.IW{1}(i,:), length(freq_range_ds), time_window_steps));
-                axis xy;
-                ylabel('frequency');
 
-                if i == 1
-                        title('Hidden layers');
-                end
-                if i == size(net.IW{1}, 1)
-                        xlabel('time (ms)');
-                end
-                %imagesc(reshape(net.IW{1}(i,:), time_window_steps, length(freq_range_ds)));
-        end
-end
-drawnow;
+figs.hiddenlayer=figure();
+nndetector_vis_hiddenlayer(net,FFT_TIME_SHIFT,time_window_steps,freq_range,freq_range_ds);
 
 %% Save input file for the LabView detector
-% Extract data from net structure, because LabView is too fucking stupid to
-% permit the . operator.  Or I am.
 %
+
 layer0 = net.IW{1};
 layer1 = net.LW{2,1};
 bias0 = net.b{1};
@@ -351,13 +339,20 @@ mmminoffset = net.inputs{1}.processSettings{1}.xoffset;
 mmmingain = net.inputs{1}.processSettings{1}.gain;
 mmmoutoffset = net.outputs{2}.processSettings{1}.xoffset;
 mmmoutgain = net.outputs{2}.processSettings{1}.gain;
-filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain.mat', ...
+filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain', ...
         bird, sprintf('_%g', times_of_interest), floor(1/FFT_TIME_SHIFT), net.layers{1}.dimensions, NTRAIN);
 fprintf('Saving as ''%s''...\n', filename);
-save(filename, ...
+save([ filename '.mat' ], ...
         'net', 'train_record', 'layer0', 'layer1', 'bias0', 'bias1', ...
         'samplerate', 'FFT_SIZE', 'FFT_TIME_SHIFT', 'freq_range_ds', ...
         'time_window_steps', 'trigger_thresholds', ...
         'mmminoffset', 'mmmingain', 'mmmoutoffset', 'mmmoutgain', 'shotgun_sigma', ...
         'NTRAIN');
-convert_to_text([filename(1:end-3) 'txt'],filename);
+convert_to_text([ filename '.txt' ],[ filename '.mat' ]);
+
+fignames=fieldnames(figs);
+
+for i=1:length(fignames)
+  set(figs.(fignames{i}),'paperpositionmode','auto');
+  markolab_multi_fig_save(figs.(fignames{i}),pwd,[ filename '_' fignames{i}],'eps,png,fig');
+end

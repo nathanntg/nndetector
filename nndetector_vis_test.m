@@ -68,5 +68,4 @@ for i = 1:NTARGETS
                 text(time_window/2, NTRAIN+NTEST/2, 'test', ...
                         'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Rotation', 90);
         end
-        colorbar; % If nothing else, this makes it line up with the spectrogram.
 end

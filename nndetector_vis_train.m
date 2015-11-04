@@ -16,7 +16,7 @@ imagesc([TIMES(1) TIMES(end)], [FREQS(1) FREQS(end)]/1000, AVE_SPECT);
 axis xy;
 xlabel('Time (ms)');
 ylabel('Frequency (kHz)');
-colorbar;
+
 % Draw the syllables of interest:
 line(repmat(TARGETS, 2, 1), repmat([FREQS(1) FREQS(end)]/1000, TARGETS_STEPS, 1)', 'Color', [1 0 0]);
 
