@@ -15,6 +15,7 @@ times_of_interest=.86;
 samplerate=44.1e3;
 freq_range=[2e3 7e3];
 subsample=[];
+fft_norm=0;
 
 nparams=length(varargin);
 
@@ -36,6 +37,8 @@ for i=1:2:nparams
       freq_range=varargin{i+1};
     case 'subsample'
       subsample=varargin{i+1};
+    case 'fft_norm'
+      fft_norm=varargin{i+1};
 	end
 end
 
@@ -124,7 +127,7 @@ randomsongs = randperm(nsongs);
 spectrograms = zeros([nsongs nfreqs ntimes]);
 spectrograms(1, :, :) = speck;
 disp('Computing spectrograms...');
-parfor i = 2:nsongs
+for i = 2:nsongs
         spectrograms(i, :, :) = spectrogram(MIC_DATA(:,i), window, NOVERLAP, [], samplerate) + eps;
 end
 
@@ -132,7 +135,9 @@ spectrograms = single(spectrograms);
 
 % Create a pretty graphic for display (which happens later)
 spectrograms = abs(spectrograms);
-spectrogram_avg_img = squeeze((mean(spectrograms(1:nmatchingsongs,:,:))));
+spectrogram_avg_img = 20*log10(squeeze((mean(spectrograms(1:nmatchingsongs,:,:)))));
+
+% fft norm here
 
 %spectrograms=20*log10(spectrograms);
 
@@ -171,11 +176,6 @@ layer0sz = length(freq_range_ds) * time_window_steps;
 % windows.  How many are there?  The training output set Y will be made by
 % setting all time windows but the desired one to 0.
 nwindows_per_song = ntimes - time_window_steps + 1;
-
-if 0
-        randomsongs = 1:nsongs;
-        fprintf('\n    NOT PERMUTING TRAINING SONGS\n\n');
-end
 
 trainsongs = randomsongs(1:ntrainsongs);
 testsongs = randomsongs(1:ntestsongs);
@@ -270,12 +270,17 @@ for song = 1:nsongs
 
         for tstep = time_window_steps : ntimes
 
-                nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
-                       = reshape(spectrograms(randomsongs(song), ...
-                                 freq_range_ds, ...
-                                 tstep - time_window_steps + 1  :  tstep), ...
-                                 [], 1);
+                tmp=spectrograms(randomsongs(song),...
+                  freq_range_ds,...
+                  tstep-time_window_steps+1:tstep);
 
+                  if fft_norm
+                    norm_factor=sum(tmp,2); % sum across freqs
+                    tmp=tmp./repmat(norm_factor,[1 length(freq_range_ds) 1]);
+                  end
+
+                nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
+                       = reshape(tmp,[], 1);
                 % Fill in the positive hits, if appropriate...
                 if randomsongs(song) > nmatchingsongs
                         continue;
@@ -294,10 +299,13 @@ nnsetX = single(nnsetX);
 nnsetY = single(nnsetY);
 
 %% Shape only?  Let's try normalising the training inputs:
-nnsetX = normc(nnsetX);
 
-%yy=reshape(nnsetY, nwindows_per_song, nsongs);
-%imagesc(yy');
+%nnsetX=nnsetX./repmat(sum(nnsetX),[size(nnsetX,1) 1]);
+
+% l2 normalization
+
+%nnsetX = normc(nnsetX);
+nnsetX=nnsetX./repmat(sqrt(sum(nnsetX.*nnsetX)),[size(nnsetX,1) 1]);
 
 % original order: spectrograms, spectrograms_ds, song_montage
 %   indices into original order: trainsongs, testsongs
@@ -363,7 +371,7 @@ trigger_thresholds = optimise_network_output_unit_trigger_thresholds(...
         songs_with_hits);
 
 
-SHOW_THRESHOLDS = true;
+SHOW_THRESHOLDS = false;
 SORT_BY_ALIGNMENT = true;
 % For each timestep of interest, draw that output unit's response to all
 % timesteps for all songs:
@@ -398,6 +406,7 @@ for i = 1:ntsteps_of_interest
                         [~, new_world_order] = sort(pos);
                         img = img(new_world_order,:,:);
                 end
+
                 image([times(1) times(end)]*1000, [1 nsongs], img);
         else
                 barrr(:, 1:ntrainsongs) = max(max(foo))/2;
