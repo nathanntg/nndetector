@@ -45,6 +45,8 @@ for i=1:2:nparams
       fft_norm=varargin{i+1};
     case 'neg_examples'
       neg_examples=varargin{i+1};
+    case 'time_window'
+      time_window=varargin{i+1};
 	end
 end
 
