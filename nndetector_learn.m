@@ -1,4 +1,4 @@
-function learn_detector(MIC_DATA,FS,varargin)
+function nndetector_learn(MIC_DATA,FS,varargin)
 %
 % TODO: clear GUI for selecting points of interest
 % TODO: further factorization
@@ -13,9 +13,13 @@ bird='test';
 padding=[];
 times_of_interest=.86;
 samplerate=44.1e3;
-freq_range=[2e3 7e3];
+%freq_range=[2e3 7e3];
+freq_range=[1e3 9e3];
 subsample=[];
-fft_norm=0;
+match_slop= 0.02; % acceptable match on either side of selection point (secs)
+false_positive_cost=1; % weight of false positives
+time_window = 0.03; % TUNE
+neg_examples=[];
 
 nparams=length(varargin);
 
@@ -39,6 +43,8 @@ for i=1:2:nparams
       subsample=varargin{i+1};
     case 'fft_norm'
       fft_norm=varargin{i+1};
+    case 'neg_examples'
+      neg_examples=varargin{i+1};
 	end
 end
 
@@ -56,25 +62,7 @@ end
 
 rng('shuffle');
 
-% What is the value of a non-hit on the training data?  0 or -1 would be
-% good choices... should make no difference at all--this is for debugging.
-global Y_NEGATIVE;
-Y_NEGATIVE = 0;
-
-% set mic data to training data
-
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
-
-% piling up the parameters here
-
-%% Downsample the data
-
-time_window = 0.03; % TUNE
-
-% How many seconds on either side of the tstep_of_interest is an acceptable match?
-MATCH_PLUSMINUS = 0.02;
-% Cost of false positives is relative to that of false negatives.
-FALSE_POSITIVE_COST = 1 % TUNE
 
 FFT_SIZE = 256;
 FFT_TIME_SHIFT = 0.003;                        % seconds
@@ -84,18 +72,26 @@ NTRAIN = 1000;
 if FS ~= samplerate
         disp(sprintf('Resampling data from %g Hz to %g Hz...', FS, samplerate));
         [a b] = rat(samplerate/FS);
-        MIC_DATA = double(MIC_DATA);
         MIC_DATA = resample(MIC_DATA, a, b);
+        if ~isempty(neg_examples)
+          neg_examples=resample(neg_examples,a,b);
+        end
 end
 
-%MIC_DATA = MIC_DATA / max(max(max(MIC_DATA)), -min(min(MIC_DATA))); % TODO: profile normalization schemes
-
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
-nsongs = size(MIC_DATA, 2);
 
-%disp('Bandpass-filtering the data...');
-%[B A] = butter(4, [0.03 0.9]);
-%MIC_DATA = filter(B, A, MIC_DATA); % TODO: meaningful frequencies here
+% stitch together negative examples
+% reshape to tack on to positive examples, bit of a hack but works OK
+
+if ~isempty(neg_examples)
+  disp('Incorporating negative examples...')
+  extra_samples=rem(length(neg_examples),nsamples_per_song);
+  neg_examples=reshape(neg_examples(1:end-extra_samples),nsamples_per_song,[]);
+  disp(sprintf('Found %g negative examples and trimmed %g samples...',size(neg_examples,2),extra_samples));
+end
+
+MIC_DATA=[MIC_DATA neg_examples];
+nsongs = size(MIC_DATA, 2);
 
 % Compute the spectrogram using original parameters (probably far from
 % optimal but I have not played with them).  Compute one to get size, then
@@ -110,7 +106,16 @@ speck = speck + eps;
 
 % This _should_ be the same as FFT_TIME_SHIFT, but let's use this because
 % round-off error is a possibility.  This is actually seconds/timestep.
+
 timestep = (times(end)-times(1))/(length(times)-1);
+
+% find cutoff points for the training data
+
+freq_range_ds = find(freqs >= freq_range(1) & freqs <= freq_range(2));
+disp(sprintf('Using frequencies in [ %g %g ] Hz: %d frequency samples.', ...
+        freq_range(1), freq_range(2), length(freq_range_ds)));
+time_window_steps = double(floor(time_window / timestep));
+disp(sprintf('Time window is %g ms, %d samples.', time_window*1000, time_window_steps));
 
 %% Define training set
 % Hold some data out for final testing.
@@ -140,21 +145,6 @@ spectrogram_avg_img = 20*log10(squeeze((mean(spectrograms(1:nmatchingsongs,:,:))
 % fft norm here
 
 %spectrograms=20*log10(spectrograms);
-
-%% Draw the pretty full-res spectrogram and the targets
-figure(4);
-subplot(2,1,1);
-imagesc([times(1) times(end)]*1000, [freqs(1) freqs(end)]/1000, spectrogram_avg_img);
-axis xy;
-xlabel('Time (ms)');
-ylabel('Frequency (kHz)');
-colorbar;
-
-% Construct "ds" (downsampled) dataset.  This is heavily downsampled to save on computational
-% resources.  This would better be done by modifying the spectrogram's
-% parameters above (which would only reduce the number of frequency bins,
-% not the number of timesteps), but this will do for now.
-
 % Number of samples: (nsongs*(ntimes-time_window))
 % Size of each sample: (ntimes-time_window)*length(freq_range)
 
@@ -162,12 +152,6 @@ colorbar;
 %% time:
 
 %%%%%%%%%%%%
-
-freq_range_ds = find(freqs >= freq_range(1) & freqs <= freq_range(2));
-disp(sprintf('Using frequencies in [ %g %g ] Hz: %d frequency samples.', ...
-        freq_range(1), freq_range(2), length(freq_range_ds)));
-time_window_steps = double(floor(time_window / timestep));
-disp(sprintf('Time window is %g ms, %d samples.', time_window*1000, time_window_steps));
 
 % How big will the neural network's input layer be?
 layer0sz = length(freq_range_ds) * time_window_steps;
@@ -209,28 +193,6 @@ for i = 1:ntsteps_of_interest
         [target_offsets(i,:) sample_offsets(i,:)] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs), tstep_of_interest(i), samplerate, timestep, canonical_songs(i));
 end
 
-%hist(target_offsets', 40);
-
-%% Draw the pretty full-res spectrogram and the targets
-figure(4);
-subplot(ntsteps_of_interest+1,1,1);
-imagesc([times(1) times(end)]*1000, [freqs(1) freqs(end)]/1000, spectrogram_avg_img);
-axis xy;
-xlabel('Time (ms)');
-ylabel('Frequency (kHz)');
-colorbar;
-% Draw the syllables of interest:
-line(repmat(times_of_interest, 2, 1)*1000, repmat([freqs(1) freqs(end)]/1000, ntsteps_of_interest, 1)', 'Color', [1 0 0]);
-
-windowrect = rectangle('Position', [(times_of_interest(1) - time_window)*1000 ...
-                                    freq_range(1)/1000 ...
-                                    time_window(1)*1000 ...
-                                    (freq_range(2)-freq_range(1))/1000], ...
-                       'EdgeColor', [1 0 0]);
-
-drawnow;
-
-
 %% Create the training set
 disp(sprintf('Creating training set from %d songs...', ntrainsongs));
 
@@ -241,7 +203,7 @@ training_set_MB = 8 * nsongs * nwindows_per_song * layer0sz / (2^20);
 
 disp(sprintf('   ...(Allocating %g MB for training set X.)', training_set_MB));
 nnsetX = zeros(layer0sz, nsongs * nwindows_per_song);
-nnsetY = Y_NEGATIVE * ones(ntsteps_of_interest, nsongs * nwindows_per_song);
+nnsetY = zeros(ntsteps_of_interest, nsongs * nwindows_per_song);
 
 %% MANUAL PER-SYLLABLE TUNING!
 
@@ -253,7 +215,7 @@ nnsetY = Y_NEGATIVE * ones(ntsteps_of_interest, nsongs * nwindows_per_song);
 % syllables, but right now they all share one sigma.
 
 % This only indirectly affects final timing precision, since thresholds are
-% optimally tuned based on the window defined in MATCH_PLUSMINUS.
+% optimally tuned based on the window defined in match_slop.
 
 shotgun_max_sec = 0.02;
 shotgun_sigma = 0.003; % TUNE
@@ -267,20 +229,15 @@ end
 
 % Populate the training data.  Infinite RAM makes this so much easier!
 for song = 1:nsongs
-
         for tstep = time_window_steps : ntimes
 
                 tmp=spectrograms(randomsongs(song),...
                   freq_range_ds,...
                   tstep-time_window_steps+1:tstep);
 
-                  if fft_norm
-                    norm_factor=sum(tmp,2); % sum across freqs
-                    tmp=tmp./repmat(norm_factor,[1 length(freq_range_ds) 1]);
-                  end
-
                 nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
                        = reshape(tmp,[], 1);
+
                 % Fill in the positive hits, if appropriate...
                 if randomsongs(song) > nmatchingsongs
                         continue;
@@ -301,11 +258,8 @@ nnsetY = single(nnsetY);
 %% Shape only?  Let's try normalising the training inputs:
 
 %nnsetX=nnsetX./repmat(sum(nnsetX),[size(nnsetX,1) 1]);
-
-% l2 normalization
-
 %nnsetX = normc(nnsetX);
-nnsetX=nnsetX./repmat(sqrt(sum(nnsetX.*nnsetX)),[size(nnsetX,1) 1]);
+%nnsetX=nnsetX./repmat(sqrt(sum(nnsetX.*nnsetX)),[size(nnsetX,1) 1]);
 
 % original order: spectrograms, spectrograms_ds, song_montage
 %   indices into original order: trainsongs, testsongs
@@ -322,17 +276,12 @@ nnset_test = ntrainsongs * nwindows_per_song + 1 : size(nnsetX, 2);
 % perceptron.
 
 net = feedforwardnet(ceil([4 * ntsteps_of_interest])); % TUNE
-%net = feedforwardnet([ntsteps_of_interest]);
-%net = feedforwardnet([]);
-
-%net.trainParam.goal=1e-3;
-
-%net.trainFcn = 'trainbfg';
 
 fprintf('Training network with %s...\n', net.trainFcn);
 
 % Once the validation set performance stops improving, it doesn't seem to
 % get better, so keep this small.
+
 net.trainParam.max_fail = 2;
 
 tic
@@ -346,14 +295,6 @@ disp(sprintf('   ...training took %g minutes.', toc/60));
 testout = sim(net, nnsetX);
 testout = reshape(testout, ntsteps_of_interest, nwindows_per_song, nsongs);
 
-disp('Creating spectral power image...');
-
-% Create an image on which to superimpose the results...
-power_img = squeeze((sum(spectrograms, 2)));
-power_img(find(isinf(power_img))) = 0;
-power_img = power_img(randomsongs,:);
-power_img = repmat(power_img / max(max(power_img)), [1 1 3]);
-
 disp('Computing optimal output thresholds...');
 
 songs_with_hits = [ones(1, nmatchingsongs) zeros(1, nsongs - nmatchingsongs)]';
@@ -362,68 +303,19 @@ songs_with_hits = songs_with_hits(randomsongs);
 trigger_thresholds = optimise_network_output_unit_trigger_thresholds(...
         testout, ...
         nwindows_per_song, ...
-        FALSE_POSITIVE_COST, ...
+        false_positive_cost, ...
         times_of_interest, ...
         tstep_of_interest, ...
-        MATCH_PLUSMINUS, ...
+        match_slop, ...
         timestep, ...
         time_window_steps, ...
         songs_with_hits);
 
-
-SHOW_THRESHOLDS = false;
-SORT_BY_ALIGNMENT = true;
-% For each timestep of interest, draw that output unit's response to all
-% timesteps for all songs:
-for i = 1:ntsteps_of_interest
-        figure(4);
-        subplot(ntsteps_of_interest+1,1,i+1);
-        foo = reshape(testout(i,:,:), [], nsongs);
-        barrr = zeros(time_window_steps-1, nsongs);
-
-        if SHOW_THRESHOLDS
-                img = power_img * 0.8;
-                fooo = trigger(foo', trigger_thresholds(i), 0.1, timestep);
-                fooo = [barrr' fooo];
-                [val pos] = max(fooo,[],2);
-
-                img(1:ntrainsongs, :, 1) = img(1:ntrainsongs, :, 1) - fooo(1:ntrainsongs,:);
-                img(1:ntrainsongs, :, 2) = img(1:ntrainsongs, :, 2) + fooo(1:ntrainsongs,:);
-                img(1:ntrainsongs, :, 3) = img(1:ntrainsongs, :, 3) + fooo(1:ntrainsongs,:);
-                img(ntrainsongs+1:end, :, 1) = img(ntrainsongs+1:end, :, 1) + fooo(ntrainsongs+1:end,:);
-                img(ntrainsongs+1:end, :, 2) = img(ntrainsongs+1:end, :, 2) - fooo(ntrainsongs+1:end,:);
-                img(ntrainsongs+1:end, :, 3) = img(ntrainsongs+1:end, :, 3) - fooo(ntrainsongs+1:end,:);
-
-                img(1:ntrainsongs, 1:time_window_steps, 3) = 1;
-                img(1:ntrainsongs, 1:time_window_steps, 2) = 1;
-                img(1:ntrainsongs, 1:time_window_steps, 1) = 0;
-                img(ntrainsongs+1:end, 1:time_window_steps, 2) = 0;
-                img(ntrainsongs+1:end, 1:time_window_steps, 1) = 1;
-                img(ntrainsongs+1:end, 1:time_window_steps, 3) = 0;
-
-                if SORT_BY_ALIGNMENT
-                        %[~, new_world_order] = sort(target_offsets);
-                        [~, new_world_order] = sort(pos);
-                        img = img(new_world_order,:,:);
-                end
-
-                image([times(1) times(end)]*1000, [1 nsongs], img);
-        else
-                barrr(:, 1:ntrainsongs) = max(max(foo))/2;
-                barrr(:, ntrainsongs+1:end) = 3*max(max(foo))/4;
-                foo = [barrr' foo'];
-                imagesc([times(1) times(end)]*1000, [1 nsongs], foo);
-        end
-        xlabel('Time (ms)');
-        ylabel('Song (random order)');
-        if ~SORT_BY_ALIGNMENT
-                text(time_window/2*1000, ntrainsongs/2, 'train', ...
-                        'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Rotation', 90);
-                text(time_window/2*1000, ntrainsongs+ntestsongs/2, 'test', ...
-                        'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', 'Rotation', 90);
-        end
-        colorbar; % If nothing else, this makes it line up with the spectrogram.
-end
+figure(6);
+nndetector_vis_train(times,freqs,spectrogram_avg_img,...
+  times_of_interest,tstep_of_interest,freq_range,time_window);
+nndetector_vis_test(ntsteps_of_interest,testout,spectrograms,times,time_window,...
+  time_window_steps,trigger_thresholds,ntrainsongs,ntestsongs,timestep,randomsongs,nmatchingsongs);
 
 % Draw the hidden units' weights.  Let the user make these square or not
 % because lazy...
@@ -450,6 +342,7 @@ drawnow;
 %% Save input file for the LabView detector
 % Extract data from net structure, because LabView is too fucking stupid to
 % permit the . operator.  Or I am.
+%
 layer0 = net.IW{1};
 layer1 = net.LW{2,1};
 bias0 = net.b{1};
@@ -467,26 +360,4 @@ save(filename, ...
         'time_window_steps', 'trigger_thresholds', ...
         'mmminoffset', 'mmmingain', 'mmmoutoffset', 'mmmoutgain', 'shotgun_sigma', ...
         'NTRAIN');
-%% Save sample data: audio on channel0, canonical hits for first syllable on channel1
-% Re-permute with a new random order
-newrand = randperm(nsongs);
-orig_songs_with_hits =  [ones(1, nmatchingsongs) zeros(1, nsongs - nmatchingsongs)]';
-new_songs_with_hits = orig_songs_with_hits(newrand);
-songs = reshape(MIC_DATA(:, newrand), [], 1);
-songs_scale = max([max(songs) -min(songs)]);
-songs = songs / songs_scale;
-hits = zeros(size(MIC_DATA));
-samples_of_interest = round(times_of_interest * samplerate);
-for i = 1:nsongs
-        if new_songs_with_hits(i)
-                % The baseline signal is recorded only for the first sample
-                % of interest:
-                hits(samples_of_interest(1) + sample_offsets(1, newrand(i)), i) = 1;
-        end
-end
-hits = reshape(hits, [], 1);
-songs = [songs hits];
-
-% new call for writing out testing data
-
-%audiowrite(sprintf('songs_%s%ss_%d%%.wav', bird, sprintf('_%g', times_of_interest), round(100/(1+NONSINGING_FRACTION))), songs, round(samplerate));
+convert_to_text([filename(1:end-3) 'txt'],filename);
