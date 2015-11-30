@@ -14,12 +14,13 @@ padding=[];
 times_of_interest=.86;
 samplerate=44.1e3;
 %freq_range=[2e3 7e3];
-freq_range=[1e3 9e3];
+freq_range=[1e3 7e3];
 subsample=[];
 match_slop= 0.02; % acceptable match on either side of selection point (secs)
 false_positive_cost=1; % weight of false positives
 time_window = 0.06; % TUNE
 neg_examples=[];
+gui_enable=1;
 
 nparams=length(varargin);
 
@@ -47,6 +48,8 @@ for i=1:2:nparams
       neg_examples=varargin{i+1};
     case 'time_window'
       time_window=varargin{i+1};
+    case 'gui_enable'
+      gui_enable=varargin{i+1};
 	end
 end
 
@@ -57,8 +60,9 @@ end
 
 if ~isempty(subsample)
   disp(['Selecting ' num2str(subsample) ' trials across the dataset...']);
-  trial_pool=1:size(MIC_DATA,2);
-  sub_pool=unique(round(linspace(1,length(trial_pool),subsample)));
+  ntrials=size(MIC_DATA,2);
+  trial_pool=1:ntrials;
+  sub_pool=unique(round(linspace(1,ntrials,subsample)));
 
   if length(sub_pool)~=subsample
     error('nndetector_learn:subsample','Issue subsampling...');
@@ -67,12 +71,22 @@ if ~isempty(subsample)
   MIC_DATA=MIC_DATA(:,sub_pool);
 end
 
+if gui_enable
+  fprintf(1,'Gui selection\n');
+  [~,~,tmp_t,~,tmp_f]=zftftb_spectro_navigate(MIC_DATA(:,1),FS);
+  times_of_interest=tmp_t(end);
+  time_window=tmp_t(end)-tmp_t(1);
+  %freq_range=round([tmp_f(1) tmp_f(end)]/1e3)*1e3; % round off by 1000 Hz
+  fprintf(1,'Times of interest:\t%g\nTime window:\t%g\nFreq range:\t%g %g\n',...
+    times_of_interest,time_window,freq_range(1),freq_range(2));
+end
+
 rng('shuffle');
 
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 
-FFT_SIZE = 256;
-FFT_TIME_SHIFT = 0.003;                        % seconds
+FFT_SIZE = 128;
+FFT_TIME_SHIFT = 0.005;                        % seconds
 NOVERLAP = FFT_SIZE - (floor(samplerate * FFT_TIME_SHIFT));
 NTRAIN = 1000;
 
@@ -179,7 +193,8 @@ end
 
 ntsteps_of_interest = length(tstep_of_interest);
 
-%% For each timestep of interest, get the offset of this song from the most typical one.
+%% For each timestep of interest, get the offset of this song from the most typical one
+
 disp('Computing target jitter compensation...');
 
 % We'll look for this long around the timestep, to compute the canonical
@@ -200,6 +215,7 @@ for i = 1:ntsteps_of_interest
 end
 
 %% Create the training set
+
 disp(sprintf('Creating training set from %d songs...', ntrainsongs));
 
 % This loop also shuffles the songs according to randomsongs, so we can use
@@ -229,11 +245,13 @@ shotgun = normpdf(0:timestep:shotgun_max_sec, 0, shotgun_sigma);
 shotgun = shotgun / max(shotgun);
 shotgun = shotgun(find(shotgun>0.1));
 shothalf = length(shotgun);
+
 if shothalf
         shotgun = [ shotgun(end:-1:2) shotgun ];
 end
 
 % Populate the training data.  Infinite RAM makes this so much easier!
+
 for song = 1:nsongs
         for tstep = time_window_steps : ntimes
 
@@ -267,28 +285,38 @@ nnsetY = single(nnsetY);
 %nnsetX = normc(nnsetX);
 %nnsetX=nnsetX./repmat(sqrt(sum(nnsetX.*nnsetX)),[size(nnsetX,1) 1]);
 
+%nnsetX=20*log10(nnsetX+eps); % log compression
+nnsetX=mapminmax(nnsetX')'; % map each example to [-1,1] across *columns*
+
 % original order: spectrograms, spectrograms_ds, song_montage
 %   indices into original order: trainsongs, testsongs
 % shuffled: nnsetX, nnsetY, testout
 %   indices into shuffled arrays: nnset_train, nnset_test
 
 % These are contiguous blocks, since the spectrograms have already been
-% shuffled.
+% shuffled
+
 nnset_train = 1:(ntrainsongs * nwindows_per_song);
 nnset_test = ntrainsongs * nwindows_per_song + 1 : size(nnsetX, 2);
 
 % Create the network.  The parameter is the number of units in each hidden
 % layer.  [8] means one hidden layer with 8 units.  [] means a simple
-% perceptron.
+% perceptron
 
 net = feedforwardnet(ceil([4 * ntsteps_of_interest])); % TUNE
 
 fprintf('Training network with %s...\n', net.trainFcn);
 
 % Once the validation set performance stops improving, it doesn't seem to
-% get better, so keep this small.
+% get better, so keep this small
 
 net.trainParam.max_fail = 2;
+
+% remove mapminmax
+
+%net.input.processParams=[];
+net.inputs{1}.processFcns={};
+%net.input.processSettings=[];
 
 tic
 %net = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), {}, {}, 0.1 + nnsetY(:, nnset_train));
@@ -335,21 +363,31 @@ nndetector_vis_hiddenlayer(net,FFT_TIME_SHIFT,time_window_steps,freq_range,freq_
 
 layer0 = net.IW{1};
 layer1 = net.LW{2,1};
+
 bias0 = net.b{1};
 bias1 = net.b{2};
-mmminoffset = net.inputs{1}.processSettings{1}.xoffset;
-mmmingain = net.inputs{1}.processSettings{1}.gain;
-mmmoutoffset = net.outputs{2}.processSettings{1}.xoffset;
-mmmoutgain = net.outputs{2}.processSettings{1}.gain;
+
+%mmminoffset = net.inputs{1}.processSettings{1}.xoffset;
+%mmmingain = net.inputs{1}.processSettings{1}.gain;
+%mmmoutoffset = net.outputs{2}.processSettings{1}.xoffset;
+%mmmoutgain = net.outputs{2}.processSettings{1}.gain;
+
+mmminoffset=[];
+mmmingain=[];
+mmmoutoffset=[];
+mmmoutgain=[];
+
 filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain', ...
         bird, sprintf('_%g', times_of_interest), floor(1/FFT_TIME_SHIFT), net.layers{1}.dimensions, NTRAIN);
 fprintf('Saving as ''%s''...\n', filename);
+
 save([ filename '.mat' ], ...
         'net', 'train_record', 'layer0', 'layer1', 'bias0', 'bias1', ...
         'samplerate', 'FFT_SIZE', 'FFT_TIME_SHIFT', 'freq_range_ds', ...
         'time_window_steps', 'trigger_thresholds', ...
         'mmminoffset', 'mmmingain', 'mmmoutoffset', 'mmmoutgain', 'shotgun_sigma', ...
         'NTRAIN');
+
 convert_to_text([ filename '.txt' ],[ filename '.mat' ]);
 
 fignames=fieldnames(figs);
