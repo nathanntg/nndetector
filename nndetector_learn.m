@@ -1,26 +1,32 @@
 function nndetector_learn(MIC_DATA,FS,varargin)
 %
-% TODO: clear GUI for selecting points of interest
 % TODO: further factorization
 % TODO: save to text by default
-%clear;
+
+if nargin<2
+  error('Need mic data and sampling rate to continue');
+end
 
 if ~isa(MIC_DATA,'double')
   MIC_DATA=double(MIC_DATA);
 end
 
-bird='test';
-padding=[];
+bird='test'; % prefix for the save file
+padding=[]; % exclude data in the beginning and end
 times_of_interest=.86;
 samplerate=44.1e3;
-%freq_range=[2e3 7e3];
-freq_range=[1e3 7e3];
-subsample=[];
+freq_range=[1e3 6e3];
+subsample=[]; % use only subsample trials (sampled across the full dataset)
 match_slop= 0.02; % acceptable match on either side of selection point (secs)
 false_positive_cost=1; % weight of false positives
 time_window = 0.06; % TUNE
-neg_examples=[];
-gui_enable=1;
+neg_examples=[]; % negative examples (calls/cage noise, etc.)
+gui_enable=1; % requires jmarkow/zftftb toolbox
+fft_size = 128; % fft size in samples
+fft_time_shift = 0.01; % timestep in seconds
+noverlap = fft_size - (floor(samplerate * fft_time_shift));
+ntrain = 1000;
+scaling= 'db'; % ('lin','log', or 'db', scaling for spectrograms)
 
 nparams=length(varargin);
 
@@ -50,6 +56,12 @@ for i=1:2:nparams
       time_window=varargin{i+1};
     case 'gui_enable'
       gui_enable=varargin{i+1};
+    case 'fft_size'
+      fft_size=varargin{i+1};
+    case 'fft_time_shift'
+      fft_time_shift=varargin{i+1};
+    case 'scaling'
+      scaling=varargin{i+1};
 	end
 end
 
@@ -85,18 +97,13 @@ rng('shuffle');
 
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 
-FFT_SIZE = 128;
-FFT_TIME_SHIFT = 0.005;                        % seconds
-NOVERLAP = FFT_SIZE - (floor(samplerate * FFT_TIME_SHIFT));
-NTRAIN = 1000;
-
 if FS ~= samplerate
-        disp(sprintf('Resampling data from %g Hz to %g Hz...', FS, samplerate));
-        [a b] = rat(samplerate/FS);
-        MIC_DATA = resample(MIC_DATA, a, b);
-        if ~isempty(neg_examples)
-          neg_examples=resample(neg_examples,a,b);
-        end
+  disp(sprintf('Resampling data from %g Hz to %g Hz...', FS, samplerate));
+  [a b] = rat(samplerate/FS);
+  MIC_DATA = resample(MIC_DATA, a, b);
+  if ~isempty(neg_examples)
+    neg_examples=resample(neg_examples,a,b);
+  end
 end
 
 [nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
@@ -118,14 +125,14 @@ nsongs = size(MIC_DATA, 2);
 % optimal but I have not played with them).  Compute one to get size, then
 % preallocate memory and compute the rest in parallel.
 
-fprintf('FFT time shift = %g s\n', FFT_TIME_SHIFT);
-window = hamming(FFT_SIZE);
+fprintf('FFT time shift = %g s\n', fft_time_shift);
+window = hamming(fft_size);
 
-[speck freqs times] = spectrogram(MIC_DATA(:,1), window, NOVERLAP, [], samplerate);
+[speck freqs times] = spectrogram(MIC_DATA(:,1), window, noverlap, [], samplerate);
 [nfreqs, ntimes] = size(speck);
 speck = speck + eps;
 
-% This _should_ be the same as FFT_TIME_SHIFT, but let's use this because
+% This _should_ be the same as fft_time_shift, but let's use this because
 % round-off error is a possibility.  This is actually seconds/timestep.
 
 timestep = (times(end)-times(1))/(length(times)-1);
@@ -134,13 +141,13 @@ timestep = (times(end)-times(1))/(length(times)-1);
 
 freq_range_ds = find(freqs >= freq_range(1) & freqs <= freq_range(2));
 disp(sprintf('Using frequencies in [ %g %g ] Hz: %d frequency samples.', ...
-        freq_range(1), freq_range(2), length(freq_range_ds)));
+freq_range(1), freq_range(2), length(freq_range_ds)));
 time_window_steps = double(floor(time_window / timestep));
 disp(sprintf('Time window is %g ms, %d samples.', time_window*1000, time_window_steps));
 
 %% Define training set
 % Hold some data out for final testing.
-ntrainsongs = min(floor(nsongs*8/10), NTRAIN);
+ntrainsongs = min(floor(nsongs*8/10), ntrain);
 ntestsongs = nsongs - ntrainsongs;
 
 % On each run of this program, change the presentation order of the
@@ -154,7 +161,7 @@ spectrograms = zeros([nsongs nfreqs ntimes]);
 spectrograms(1, :, :) = speck;
 disp('Computing spectrograms...');
 for i = 2:nsongs
-        spectrograms(i, :, :) = spectrogram(MIC_DATA(:,i), window, NOVERLAP, [], samplerate) + eps;
+  spectrograms(i, :, :) = spectrogram(MIC_DATA(:,i), window, noverlap, [], samplerate) + eps;
 end
 
 spectrograms = single(spectrograms);
@@ -186,9 +193,9 @@ testsongs = randomsongs(1:ntestsongs);
 tstep_of_interest = round(times_of_interest / timestep);
 
 if any(times_of_interest < time_window)
-        error('learn_detector:invalid_time', ...
-                'All times_of_interest [ %s] must be >= time_window (%g)', ...
-                sprintf('%g ', times_of_interest), time_window);
+  error('learn_detector:invalid_time', ...
+  'All times_of_interest [ %s] must be >= time_window (%g)', ...
+  sprintf('%g ', times_of_interest), time_window);
 end
 
 ntsteps_of_interest = length(tstep_of_interest);
@@ -206,12 +213,12 @@ tstep_buffer = round(time_buffer / timestep);
 % For alignment: which is the most stereotypical song at each target?
 
 for i = 1:ntsteps_of_interest
-        range = tstep_of_interest(i)-tstep_buffer:tstep_of_interest(i)+tstep_buffer;
-        range = range(find(range>0&range<=ntimes));
-        foo = reshape(spectrograms(1:nmatchingsongs, :, range), nmatchingsongs, []) * reshape(mean(spectrograms(:, :, range), 1), 1, [])';
-        [val canonical_songs(i)] = max(foo);
-        [target_offsets(i,:) sample_offsets(i,:)] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs),...
-          tstep_of_interest(i), samplerate, timestep, canonical_songs(i));
+  range = tstep_of_interest(i)-tstep_buffer:tstep_of_interest(i)+tstep_buffer;
+  range = range(find(range>0&range<=ntimes));
+  foo = reshape(spectrograms(1:nmatchingsongs, :, range), nmatchingsongs, []) * reshape(mean(spectrograms(:, :, range), 1), 1, [])';
+  [val canonical_songs(i)] = max(foo);
+  [target_offsets(i,:) sample_offsets(i,:)] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs),...
+  tstep_of_interest(i), samplerate, timestep, canonical_songs(i));
 end
 
 %% Create the training set
@@ -247,32 +254,34 @@ shotgun = shotgun(find(shotgun>0.1));
 shothalf = length(shotgun);
 
 if shothalf
-        shotgun = [ shotgun(end:-1:2) shotgun ];
+  shotgun = [ shotgun(end:-1:2) shotgun ];
 end
 
 % Populate the training data.  Infinite RAM makes this so much easier!
 
 for song = 1:nsongs
-        for tstep = time_window_steps : ntimes
+  for tstep = time_window_steps : ntimes
 
-                tmp=spectrograms(randomsongs(song),...
-                  freq_range_ds,...
-                  tstep-time_window_steps+1:tstep);
+    tmp=spectrograms(randomsongs(song),...
+    freq_range_ds,...
+    tstep-time_window_steps+1:tstep);
 
-                nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
-                       = reshape(tmp,[], 1);
+    nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
+      = reshape(tmp,[], 1);
 
-                % Fill in the positive hits, if appropriate...
-                if randomsongs(song) > nmatchingsongs
-                        continue;
-                end
-                for interesting = 1:ntsteps_of_interest
-                        if tstep == tstep_of_interest(interesting)
-                                nnsetY(interesting, (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps - shothalf + 2 : ...
-                                                    (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps + shothalf) = shotgun;
-                        end
-                end
-        end
+    % Fill in the positive hits, if appropriate...
+
+    if randomsongs(song) > nmatchingsongs
+      continue;
+    end
+
+    for interesting = 1:ntsteps_of_interest
+      if tstep == tstep_of_interest(interesting)
+        nnsetY(interesting, (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps - shothalf + 2 : ...
+          (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps + shothalf) = shotgun;
+      end
+    end
+  end
 end
 
 disp('Converting neural net data to singles...');
@@ -281,11 +290,18 @@ nnsetY = single(nnsetY);
 
 %% Shape only?  Let's try normalising the training inputs:
 
-%nnsetX=nnsetX./repmat(sum(nnsetX),[size(nnsetX,1) 1]);
-%nnsetX = normc(nnsetX);
-%nnsetX=nnsetX./repmat(sqrt(sum(nnsetX.*nnsetX)),[size(nnsetX,1) 1]);
+% scaling
 
-%nnsetX=20*log10(nnsetX+eps); % log compression
+if strcmp(lower(scaling),'log')
+  fprintf('Log scaling\n');
+  nnsetX=log(nnsetX);
+elseif strcmp(lower(scaling),'db')
+  fprintf('dB scaling\n');
+  nnsetX=20*log10(nnsetX);
+else
+  fprintf('Linear scaling\n');
+end
+
 nnsetX=mapminmax(nnsetX')'; % map each example to [-1,1] across *columns*
 
 % original order: spectrograms, spectrograms_ds, song_montage
@@ -314,12 +330,8 @@ net.trainParam.max_fail = 2;
 
 % remove mapminmax
 
-%net.input.processParams=[];
 net.inputs{1}.processFcns={};
-%net.input.processSettings=[];
-
 tic
-%net = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), {}, {}, 0.1 + nnsetY(:, nnset_train));
 [net, train_record] = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), 'UseParallel', 'no');
 
 % Oh yeah, the line above was the hard part.
@@ -335,15 +347,15 @@ songs_with_hits = [ones(1, nmatchingsongs) zeros(1, nsongs - nmatchingsongs)]';
 songs_with_hits = songs_with_hits(randomsongs);
 
 [trigger_thresholds figs.roc] = optimise_network_output_unit_trigger_thresholds(...
-        testout, ...
-        nwindows_per_song, ...
-        false_positive_cost, ...
-        times_of_interest, ...
-        tstep_of_interest, ...
-        match_slop, ...
-        timestep, ...
-        time_window_steps, ...
-        songs_with_hits);
+  testout, ...
+  nwindows_per_song, ...
+  false_positive_cost, ...
+  times_of_interest, ...
+  tstep_of_interest, ...
+  match_slop, ...
+  timestep, ...
+  time_window_steps, ...
+  songs_with_hits);
 
 figs.performance=figure();
 nndetector_vis_train(times,freqs,spectrogram_avg_img,...
@@ -356,10 +368,7 @@ colormap(jet);
 % because lazy...
 
 figs.hiddenlayer=figure();
-nndetector_vis_hiddenlayer(net,FFT_TIME_SHIFT,time_window_steps,freq_range,freq_range_ds);
-
-%% Save input file for the LabView detector
-%
+nndetector_vis_hiddenlayer(net,fft_time_shift,time_window_steps,freq_range,freq_range_ds);
 
 layer0 = net.IW{1};
 layer1 = net.LW{2,1};
@@ -367,28 +376,17 @@ layer1 = net.LW{2,1};
 bias0 = net.b{1};
 bias1 = net.b{2};
 
-%mmminoffset = net.inputs{1}.processSettings{1}.xoffset;
-%mmmingain = net.inputs{1}.processSettings{1}.gain;
-%mmmoutoffset = net.outputs{2}.processSettings{1}.xoffset;
-%mmmoutgain = net.outputs{2}.processSettings{1}.gain;
-
-mmminoffset=[];
-mmmingain=[];
-mmmoutoffset=[];
-mmmoutgain=[];
-
 filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain', ...
-        bird, sprintf('_%g', times_of_interest), floor(1/FFT_TIME_SHIFT), net.layers{1}.dimensions, NTRAIN);
+bird, sprintf('_%g', times_of_interest), floor(1/fft_time_shift), net.layers{1}.dimensions, ntrain);
 fprintf('Saving as ''%s''...\n', filename);
 
 save([ filename '.mat' ], ...
-        'net', 'train_record', 'layer0', 'layer1', 'bias0', 'bias1', ...
-        'samplerate', 'FFT_SIZE', 'FFT_TIME_SHIFT', 'freq_range_ds', ...
-        'time_window_steps', 'trigger_thresholds', ...
-        'mmminoffset', 'mmmingain', 'mmmoutoffset', 'mmmoutgain', 'shotgun_sigma', ...
-        'NTRAIN');
+  'net', 'train_record','samplerate', 'fft_size', 'fft_time_shift', 'freq_range_ds', ...
+  'time_window_steps', 'trigger_thresholds', 'shotgun_sigma', ...
+  'ntrain','scaling');
 
-convert_to_text([ filename '.txt' ],[ filename '.mat' ]);
+% uncomment when conver to text is working again
+%convert_to_text([ filename '.txt' ],[ filename '.mat' ]);
 
 fignames=fieldnames(figs);
 
