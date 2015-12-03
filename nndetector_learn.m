@@ -15,19 +15,24 @@ bird='test'; % prefix for the save file
 padding=[]; % exclude data in the beginning and end
 times_of_interest=.86;
 samplerate=44.1e3;
-freq_range=[1e3 6e3];
+freq_range=[1e3 7e3];
 subsample=[]; % use only subsample trials (sampled across the full dataset)
 match_slop= 0.02; % acceptable match on either side of selection point (secs)
 false_positive_cost=1; % weight of false positives
 time_window = 0.06; % TUNE
 neg_examples=[]; % negative examples (calls/cage noise, etc.)
 gui_enable=1; % requires jmarkow/zftftb toolbox
-fft_size = 128; % fft size in samples
-fft_time_shift = 0.002; % timestep in seconds
+win_size = 128; % fft size in samples
+fft_time_shift = 120; % timestep in samples
+fft_size = 128;
 ntrain = 1000;
 scaling= 'db'; % ('lin','log', or 'db', scaling for spectrograms)
-
+nhidden_units=3;
+nhidden_layers=2;
 nparams=length(varargin);
+shotgun_sigma = 0.003; % TUNE
+shotgun_max_sec = 0.02;
+auto_encoder=0;
 
 if mod(nparams,2)>0
 	error('nndetector:argChk','Parameters must be specified as parameter/value pairs!');
@@ -55,16 +60,18 @@ for i=1:2:nparams
       time_window=varargin{i+1};
     case 'gui_enable'
       gui_enable=varargin{i+1};
-    case 'fft_size'
-      fft_size=varargin{i+1};
+    case 'win_size'
+      win_size=varargin{i+1};
     case 'fft_time_shift'
       fft_time_shift=varargin{i+1};
     case 'scaling'
       scaling=varargin{i+1};
+    case 'auto_encoder'
+      auto_encoder=varargin{i+1};
 	end
 end
 
-noverlap = fft_size - (floor(samplerate * fft_time_shift));
+noverlap = win_size - (fft_time_shift);
 
 if ~isempty(padding) & length(padding)==2
   pad_smps=round(padding*FS);
@@ -126,10 +133,12 @@ nsongs = size(MIC_DATA, 2);
 % optimal but I have not played with them).  Compute one to get size, then
 % preallocate memory and compute the rest in parallel.
 
-fprintf('FFT time shift = %g s\n', fft_time_shift);
-window = hamming(fft_size);
+% TODO: parameters in struct and pass to various functions (make amenable to running everything from CLI)
 
-[speck freqs times] = spectrogram(MIC_DATA(:,1), window, noverlap, [], samplerate);
+fprintf('FFT time shift = %g s\n', fft_time_shift/samplerate);
+window = hamming(win_size);
+
+[speck freqs times] = spectrogram(MIC_DATA(:,1), window, noverlap, fft_size , samplerate);
 [nfreqs, ntimes] = size(speck);
 speck = speck + eps;
 
@@ -148,6 +157,7 @@ disp(sprintf('Time window is %g ms, %d samples.', time_window*1000, time_window_
 
 %% Define training set
 % Hold some data out for final testing.
+
 ntrainsongs = min(floor(nsongs*8/10), ntrain);
 ntestsongs = nsongs - ntrainsongs;
 
@@ -162,7 +172,7 @@ spectrograms = zeros([nsongs nfreqs ntimes]);
 spectrograms(1, :, :) = speck;
 disp('Computing spectrograms...');
 for i = 2:nsongs
-  spectrograms(i, :, :) = spectrogram(MIC_DATA(:,i), window, noverlap, [], samplerate) + eps;
+  spectrograms(i, :, :) = spectrogram(MIC_DATA(:,i), window, noverlap, fft_size, samplerate);
 end
 
 spectrograms = single(spectrograms);
@@ -186,7 +196,9 @@ layer0sz = length(freq_range_ds) * time_window_steps;
 % The training input set X is made by taking all possible time
 % windows.  How many are there?  The training output set Y will be made by
 % setting all time windows but the desired one to 0.
+
 nwindows_per_song = ntimes - time_window_steps + 1;
+
 
 trainsongs = randomsongs(1:ntrainsongs);
 testsongs = randomsongs(1:ntestsongs);
@@ -235,55 +247,9 @@ disp(sprintf('   ...(Allocating %g MB for training set X.)', training_set_MB));
 nnsetX = zeros(layer0sz, nsongs * nwindows_per_song);
 nnsetY = zeros(ntsteps_of_interest, nsongs * nwindows_per_song);
 
-%% MANUAL PER-SYLLABLE TUNING!
-
-% Some syllables are really hard to pinpoint to within the frame rate, so
-% the network has to try to learn "image A is a hit, and this thing that
-% looks identical to image A is not a hit".  For each sample of interest,
-% define a "shotgun function" that spreads the "acceptable" timesteps in
-% the training set a little.  This could be generalised for multiple
-% syllables, but right now they all share one sigma.
-
-% This only indirectly affects final timing precision, since thresholds are
-% optimally tuned based on the window defined in match_slop.
-
-shotgun_max_sec = 0.02;
-shotgun_sigma = 0.003; % TUNE
-shotgun = normpdf(0:timestep:shotgun_max_sec, 0, shotgun_sigma);
-shotgun = shotgun / max(shotgun);
-shotgun = shotgun(find(shotgun>0.1));
-shothalf = length(shotgun);
-
-if shothalf
-  shotgun = [ shotgun(end:-1:2) shotgun ];
-end
-
-% Populate the training data.  Infinite RAM makes this so much easier!
-
-for song = 1:nsongs
-  for tstep = time_window_steps : ntimes
-
-    tmp=spectrograms(randomsongs(song),...
-    freq_range_ds,...
-    tstep-time_window_steps+1:tstep);
-
-    nnsetX(:, (song-1)*nwindows_per_song + tstep - time_window_steps + 1) ...
-      = reshape(tmp,[], 1);
-
-    % Fill in the positive hits, if appropriate...
-
-    if randomsongs(song) > nmatchingsongs
-      continue;
-    end
-
-    for interesting = 1:ntsteps_of_interest
-      if tstep == tstep_of_interest(interesting)
-        nnsetY(interesting, (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps - shothalf + 2 : ...
-          (song-1)*nwindows_per_song + tstep + target_offsets(interesting, randomsongs(song)) - time_window_steps + shothalf) = shotgun;
-      end
-    end
-  end
-end
+[nnsetX,nnsetY]=nndetector_setup_inputs(nnsetX,nnsetY,shotgun_max_sec,shotgun_sigma,timestep,spectrograms,...
+    freq_range_ds,time_window_steps,nwindows_per_song,target_offsets,...
+    randomsongs,nmatchingsongs,ntsteps_of_interest,tstep_of_interest);
 
 disp('Converting neural net data to singles...');
 nnsetX = single(nnsetX);
@@ -320,24 +286,61 @@ nnset_test = ntrainsongs * nwindows_per_song + 1 : size(nnsetX, 2);
 % layer.  [8] means one hidden layer with 8 units.  [] means a simple
 % perceptron
 
-net = feedforwardnet(ceil([4 * ntsteps_of_interest])); % TUNE
+if ~auto_encoder
 
-% trainlm consumes an insane amount of RAM for larger time windows
-% for now let's try trainbfg or trainscg
+  net = feedforwardnet(repmat(ceil([nhidden_units * ntsteps_of_interest]),[1 nhidden_layers])); % TUNE
+  net.trainFcn='trainscg';
+  net.performFcn='mse';
+  net.trainParam.max_fail = 5;
+  nnsetX=zscore(nnsetX);
+  net.inputs{1}.processFcns={'mapstd'};
 
-% if large number of input units shy away from lm (bfg or scg seem to be reasonable alternatives)
+else
 
-net.trainFcn='trainscg';
-fprintf('Training network with %s...\n', net.trainFcn);
+  % try out a baby deepnet using the 2015 toolbox
 
-% Once the validation set performance stops improving, it doesn't seem to
-% get better, so keep this small
+  nnsetX=zscore(nnsetX);
+  nnsetX=zscore(nnsetX')';
 
-net.trainParam.max_fail = 2;
+  % consider training auto-encoder outside of function
+  % recomputing this seems to be a waste...
 
-% remove mapminmax
+  % regularization and sparsity terms need some tuning
 
-net.inputs{1}.processFcns={'mapminmax'};
+  autoenc1 = trainAutoencoder(nnsetX,50,...
+        'EncoderTransferFunction','logsig',...
+        'DecoderTransferFunction','purelin',...
+        'L2WeightRegularization',0.1,...
+        'SparsityRegularization',1,...
+        'SparsityProportion',0.05,...
+        'ScaleData',false,...
+        'MaxEpochs',500);
+
+  features1=encode(autoenc1,nnsetX);
+
+  % TODO: store auto-encoder and add ability to load one in
+  % (no point in reproducing this for the same dataset)
+
+  % for now 1 autoencoder seems to suffice
+
+  % autoenc2 = trainAutoencoder(features1,10,...
+  %       'EncoderTransferFunction','logsig',...
+  %       'DecoderTransferFunction','purelin',...
+  %       'L2WeightRegularization',0.1,...
+  %       'SparsityRegularization',1,...
+  %       'SparsityProportion',0.05,...
+  %       'ScaleData',false,...
+  %       'MaxEpochs',100);
+  %
+  % features2=encode(autoenc2,features1);
+
+  % check cross entropy and mse
+
+  softnet=trainSoftmaxLayer(features1,nnsetY,'LossFunction','crossentropy');
+  net=stack(autoenc1,softnet);
+  net.divideFcn='dividerand';
+
+end
 
 tic
 [net, train_record] = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), 'UseParallel', 'no');
@@ -376,19 +379,19 @@ colormap(jet);
 % because lazy...
 
 figs.hiddenlayer=figure();
-nndetector_vis_hiddenlayer(net,fft_time_shift,time_window_steps,freq_range,freq_range_ds);
+nndetector_vis_hiddenlayer(net,fft_time_shift/samplerate,time_window_steps,freq_range,freq_range_ds);
 
 filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain', ...
-bird, sprintf('_%g', times_of_interest), floor(1/fft_time_shift), net.layers{1}.dimensions, ntrain);
+bird, sprintf('_%g', times_of_interest), floor(1/fft_time_shift/samplerate), net.layers{1}.dimensions, ntrain);
 fprintf('Saving as ''%s''...\n', filename);
 
 mkdir(bird);
 save(fullfile(bird,[ filename '.mat' ]), ...
-  'net', 'train_record','samplerate', 'fft_size', 'fft_time_shift', 'freq_range_ds', ...
-  'time_window_steps', 'trigger_thresholds', 'shotgun_sigma', ...
+  'net', 'train_record','samplerate', 'win_size', 'fft_time_shift', 'freq_range_ds', ...
+  'time_window_steps', 'trigger_thresholds', 'shotgun_sigma', 'fft_size', ...
   'ntrain','scaling');
 
-% uncomment when conver to text is working again
+% uncomment when convert to text is working again
 convert_to_text(fullfile(bird,[ filename '.txt' ]),fullfile(bird,[ filename '.mat' ]));
 
 fignames=fieldnames(figs);
