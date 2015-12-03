@@ -48,8 +48,6 @@ for i=1:2:nparams
       freq_range=varargin{i+1};
     case 'subsample'
       subsample=varargin{i+1};
-    case 'fft_norm'
-      fft_norm=varargin{i+1};
     case 'neg_examples'
       neg_examples=varargin{i+1};
     case 'time_window'
@@ -65,7 +63,7 @@ for i=1:2:nparams
 	end
 end
 
-if ~isempty(padding) & length(padding)==2
+if ~isempty(padding) && length(padding)==2
   pad_smps=round(padding*FS);
   MIC_DATA=MIC_DATA(pad_smps(1):end-pad_smps(2),:);
 end
@@ -73,7 +71,6 @@ end
 if ~isempty(subsample)
   disp(['Selecting ' num2str(subsample) ' trials across the dataset...']);
   ntrials=size(MIC_DATA,2);
-  trial_pool=1:ntrials;
   sub_pool=unique(round(linspace(1,ntrials,subsample)));
 
   if length(sub_pool)~=subsample
@@ -94,8 +91,6 @@ if gui_enable
 end
 
 rng('shuffle');
-
-[nsamples_per_song, nmatchingsongs] = size(MIC_DATA);
 
 if FS ~= samplerate
   disp(sprintf('Resampling data from %g Hz to %g Hz...', FS, samplerate));
@@ -187,9 +182,6 @@ layer0sz = length(freq_range_ds) * time_window_steps;
 % setting all time windows but the desired one to 0.
 nwindows_per_song = ntimes - time_window_steps + 1;
 
-trainsongs = randomsongs(1:ntrainsongs);
-testsongs = randomsongs(1:ntestsongs);
-
 tstep_of_interest = round(times_of_interest / timestep);
 
 if any(times_of_interest < time_window)
@@ -216,8 +208,8 @@ for i = 1:ntsteps_of_interest
   range = tstep_of_interest(i)-tstep_buffer:tstep_of_interest(i)+tstep_buffer;
   range = range(find(range>0&range<=ntimes));
   foo = reshape(spectrograms(1:nmatchingsongs, :, range), nmatchingsongs, []) * reshape(mean(spectrograms(:, :, range), 1), 1, [])';
-  [val canonical_songs(i)] = max(foo);
-  [target_offsets(i,:) sample_offsets(i,:)] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs),...
+  [~, canonical_songs(i)] = max(foo);
+  [target_offsets(i,:), ~] = get_target_offsets_jeff(MIC_DATA(:, 1:nmatchingsongs),...
   tstep_of_interest(i), samplerate, timestep, canonical_songs(i));
 end
 
