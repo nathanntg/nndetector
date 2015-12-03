@@ -23,8 +23,7 @@ time_window = 0.06; % TUNE
 neg_examples=[]; % negative examples (calls/cage noise, etc.)
 gui_enable=1; % requires jmarkow/zftftb toolbox
 fft_size = 128; % fft size in samples
-fft_time_shift = 0.01; % timestep in seconds
-noverlap = fft_size - (floor(samplerate * fft_time_shift));
+fft_time_shift = 0.002; % timestep in seconds
 ntrain = 1000;
 scaling= 'db'; % ('lin','log', or 'db', scaling for spectrograms)
 
@@ -64,6 +63,8 @@ for i=1:2:nparams
       scaling=varargin{i+1};
 	end
 end
+
+noverlap = fft_size - (floor(samplerate * fft_time_shift));
 
 if ~isempty(padding) & length(padding)==2
   pad_smps=round(padding*FS);
@@ -302,7 +303,7 @@ else
   fprintf('Linear scaling\n');
 end
 
-nnsetX=mapminmax(nnsetX')'; % map each example to [-1,1] across *columns*
+%nnsetX=mapminmax(nnsetX')'; % map each example to [-1,1] across *columns*
 
 % original order: spectrograms, spectrograms_ds, song_montage
 %   indices into original order: trainsongs, testsongs
@@ -321,6 +322,12 @@ nnset_test = ntrainsongs * nwindows_per_song + 1 : size(nnsetX, 2);
 
 net = feedforwardnet(ceil([4 * ntsteps_of_interest])); % TUNE
 
+% trainlm consumes an insane amount of RAM for larger time windows
+% for now let's try trainbfg or trainscg
+
+% if large number of input units shy away from lm (bfg or scg seem to be reasonable alternatives)
+
+net.trainFcn='trainscg';
 fprintf('Training network with %s...\n', net.trainFcn);
 
 % Once the validation set performance stops improving, it doesn't seem to
@@ -330,7 +337,8 @@ net.trainParam.max_fail = 2;
 
 % remove mapminmax
 
-net.inputs{1}.processFcns={};
+net.inputs{1}.processFcns={'mapminmax'};
+
 tic
 [net, train_record] = train(net, nnsetX(:, nnset_train), nnsetY(:, nnset_train), 'UseParallel', 'no');
 
@@ -370,27 +378,22 @@ colormap(jet);
 figs.hiddenlayer=figure();
 nndetector_vis_hiddenlayer(net,fft_time_shift,time_window_steps,freq_range,freq_range_ds);
 
-layer0 = net.IW{1};
-layer1 = net.LW{2,1};
-
-bias0 = net.b{1};
-bias1 = net.b{2};
-
 filename = sprintf('detector_%s%s_%dHz_%dhid_%dtrain', ...
 bird, sprintf('_%g', times_of_interest), floor(1/fft_time_shift), net.layers{1}.dimensions, ntrain);
 fprintf('Saving as ''%s''...\n', filename);
 
-save([ filename '.mat' ], ...
+mkdir(bird);
+save(fullfile(bird,[ filename '.mat' ]), ...
   'net', 'train_record','samplerate', 'fft_size', 'fft_time_shift', 'freq_range_ds', ...
   'time_window_steps', 'trigger_thresholds', 'shotgun_sigma', ...
   'ntrain','scaling');
 
 % uncomment when conver to text is working again
-%convert_to_text([ filename '.txt' ],[ filename '.mat' ]);
+convert_to_text(fullfile(bird,[ filename '.txt' ]),fullfile(bird,[ filename '.mat' ]));
 
 fignames=fieldnames(figs);
 
 for i=1:length(fignames)
   set(figs.(fignames{i}),'paperpositionmode','auto');
-  markolab_multi_fig_save(figs.(fignames{i}),pwd,[ filename '_' fignames{i}],'eps,png,fig');
+  markolab_multi_fig_save(figs.(fignames{i}),bird,[ filename '_' fignames{i}],'eps,png,fig');
 end
